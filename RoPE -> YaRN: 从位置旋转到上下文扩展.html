@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RoPE → YaRN：从位置旋转到长上下文扩展</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='12' fill='none' stroke='%232864dc' stroke-width='3'/%3E%3Cpath d='M16 16L25 10' stroke='%23087f8c' stroke-width='3'/%3E%3C/svg%3E">
+<style>
+:root{--bg:#f5f7fb;--paper:#fff;--ink:#172033;--muted:#5d687c;--line:#dfe5ef;--blue:#2864dc;--blue2:#eaf1ff;--teal:#087f8c;--teal2:#e5f7f7;--orange:#b96708;--orange2:#fff3df;--purple:#7047bd;--purple2:#f1ebff;--green:#16794b;--green2:#e5f6ec;--shadow:0 12px 34px rgba(28,45,80,.07)}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.65 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+main{max-width:1120px;margin:auto;padding:34px 22px 60px}.hero{padding:34px 36px;border-radius:24px;background:linear-gradient(125deg,#14284e,#2459ae 58%,#13828c);color:white;box-shadow:var(--shadow);position:relative;overflow:hidden}.hero:after{content:"";position:absolute;width:300px;height:300px;border:1px solid #ffffff35;border-radius:50%;right:-70px;top:-120px;box-shadow:0 0 0 28px #ffffff0a,0 0 0 58px #ffffff08}.eyebrow{font-size:12px;letter-spacing:.15em;text-transform:uppercase;opacity:.8}.hero h1{font-size:clamp(28px,4vw,42px);line-height:1.2;margin:12px 0}.hero p{max-width:760px;color:#e7efff;margin:12px 0 0}.hero .flow{display:flex;gap:8px;flex-wrap:wrap;margin-top:22px}.pill{padding:6px 11px;border:1px solid #ffffff50;border-radius:999px;font-size:12px;background:#ffffff12}
+section{margin-top:26px}.section-head{display:flex;align-items:flex-start;gap:14px;margin:0 0 14px}.num{flex:none;width:36px;height:36px;display:grid;place-items:center;border-radius:12px;background:var(--blue2);color:var(--blue);font-weight:800}.section-head h2{font-size:23px;line-height:1.3;margin:2px 0 4px}.section-head p{margin:0;color:var(--muted)}.card{background:var(--paper);border:1px solid var(--line);border-radius:18px;padding:22px;box-shadow:var(--shadow);margin-top:14px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.mini{border:1px solid var(--line);border-radius:14px;padding:16px;background:#fff}.mini h3{margin:0 0 7px;font-size:16px}.muted{color:var(--muted)}.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#f6f8fc;border:1px solid var(--line);border-radius:10px;padding:12px 14px;overflow-x:auto;font-size:14px;color:#1e355d}.bigformula{font-size:clamp(16px,2.2vw,21px);text-align:center;padding:17px}.tag{display:inline-block;border-radius:7px;padding:2px 7px;font-size:12px;font-weight:700}.tag.blue{background:var(--blue2);color:var(--blue)}.tag.teal{background:var(--teal2);color:var(--teal)}.tag.orange{background:var(--orange2);color:var(--orange)}.tag.purple{background:var(--purple2);color:var(--purple)}.tag.green{background:var(--green2);color:var(--green)}
+table{border-collapse:collapse;width:100%;font-size:14px;margin-top:10px}th,td{text-align:left;border-bottom:1px solid var(--line);padding:10px 11px;vertical-align:top}th{color:#46536b;background:#f7f9fc;font-weight:700}tr:last-child td{border-bottom:0}
+.controls{display:flex;gap:18px;align-items:center;flex-wrap:wrap;margin:8px 0 14px}.controls label{display:flex;gap:8px;align-items:center;color:var(--muted)}input[type=range]{accent-color:var(--blue);width:180px}select{border:1px solid var(--line);border-radius:8px;padding:7px;background:white;color:var(--ink)}
+.chart{width:100%;height:auto;display:block}.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:8px}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px}
+.callout{border-left:4px solid var(--blue);background:#f0f5ff;padding:13px 16px;border-radius:0 12px 12px 0;margin-top:14px}.callout.orange{border-color:var(--orange);background:var(--orange2)}.callout.green{border-color:var(--green);background:var(--green2)}
+.steps{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.step{border:1px solid var(--line);border-radius:14px;padding:15px;background:white}.step b{display:block;margin-bottom:5px}.arrow{color:var(--blue);font-weight:800;font-size:20px}
+footer{margin-top:24px;color:var(--muted);font-size:12px;text-align:center}
+@media(max-width:760px){main{padding:16px 12px 38px}.hero{padding:26px 22px}.grid,.grid3,.steps{grid-template-columns:1fr}.card{padding:16px}.section-head h2{font-size:20px}table{font-size:12px}th,td{padding:8px 6px}}
+/* 局部修复：只影响旋转矩阵与 1.3 图示，不改变 YaRN 图。 */
+.matrix-equation{display:flex;flex-direction:column;align-items:center;gap:18px;padding:20px 14px}
+.matrix-line{display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap}
+.matrix{display:inline-grid;grid-template-columns:repeat(2,minmax(76px,auto));column-gap:20px;row-gap:7px;padding:7px 18px;position:relative;line-height:1.55;flex:none}
+.matrix:before,.matrix:after{content:"";position:absolute;top:0;bottom:0;width:9px;border:2px solid currentColor}
+.matrix:before{left:0;border-right:0}.matrix:after{right:0;border-left:0}.matrix>span{text-align:center;white-space:nowrap}
+#rope-demo .controls{gap:10px 18px}#rope-demo .controls label{min-height:44px;flex-wrap:wrap}#rope-demo select{font-size:16px;min-height:44px}#rope-demo input[type=range]{height:44px;max-width:100%}
+#rope-demo .rotations{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+#rope-demo .rotation-panel{border:1px solid var(--line);border-top:3px solid var(--pair-color);border-radius:12px;padding:14px;min-width:0;background:#fff}
+#rope-demo .rotation-panel h4{font-size:17px;margin:0 0 6px;color:var(--pair-color)}
+#rope-demo .rotation-panel svg{display:block;width:100%;height:190px}
+#rope-demo .rotation-panel dl{margin:8px 0 0;font-size:14px;font-variant-numeric:tabular-nums}
+#rope-demo .rotation-panel dl div{display:flex;justify-content:space-between;flex-wrap:wrap;gap:2px 8px;margin:4px 0}
+#rope-demo .rotation-panel dt{color:var(--muted)}#rope-demo .rotation-panel dd{margin:0;overflow-wrap:anywhere}
+#rope-demo input[type=number]{width:104px;border:1px solid var(--line);border-radius:8px;padding:8px;font-size:16px;min-height:44px}
+#rope-demo .rotation-note{font-size:14px;background:#f6f8fc;padding:12px;border-radius:9px;color:var(--muted)}
+@media(min-width:1000px){#rope-demo .rotations{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media(max-width:480px){#rope-demo .rotations{grid-template-columns:1fr}}
+#rope-demo button:disabled{opacity:.55;cursor:default}
+#rope-demo .chart-feedback{color:var(--muted);font-size:14px;margin-top:10px}#rope-demo button{border:1px solid var(--line);background:#fff;color:var(--blue);border-radius:8px;padding:8px 12px;min-height:44px;font-size:14px;cursor:pointer}
+#rope-demo :focus-visible{outline:2px solid var(--blue);outline-offset:3px}
+@media(max-width:760px){.matrix{font-size:16px;grid-template-columns:repeat(2,minmax(65px,auto));column-gap:10px;padding:7px 13px}#rope-demo .chart-notes{grid-template-columns:repeat(2,minmax(0,1fr))}#rope-demo .controls label{width:100%}}
+</style>
+</head>
+<body>
+<main>
+<header class="hero">
+  <div class="eyebrow">POSITION ENCODING · LONG CONTEXT</div>
+  <h1>RoPE → YaRN：<br>从位置旋转到长上下文扩展</h1>
+  <p>沿着一个问题逐步推导：模型怎样把 token 的位置放进 Attention？为什么长上下文会让原有位置编码失配？YaRN 又如何通过分频段插值与 Attention Scaling 缓解这个问题？</p>
+  <div class="flow"><span class="pill">① RoPE：位置如何进入 Q/K</span><span class="pill">② 长上下文：频率外推问题</span><span class="pill">③ YaRN：分段 + 尺度校准</span></div>
+</header>
+
+<section>
+  <div class="section-head"><div class="num">1</div><div><h2>RoPE：用旋转把位置信息注入 Q、K</h2><p>核心想法：同一内容放在不同位置时，按位置旋转；不同维度对使用不同频率。</p></div></div>
+  <div class="card">
+    <h3>1.1 为什么是旋转？</h3>
+    <p>把每两个通道视为二维向量。位置 <b>m</b> 决定旋转角度，旋转后的向量模长不变，但方向随位置变化。</p>
+    <div class="formula bigformula matrix-equation">
+      <div>x′<sub>m,i</sub> = R(m θ<sub>i</sub>) x<sub>i</sub></div>
+      <div class="matrix-line"><span>R(φ) =</span><span class="matrix" role="math" aria-label="二行二列旋转矩阵，第一行cosφ、负sinφ，第二行sinφ、cosφ"><span>cos φ</span><span>−sin φ</span><span>sin φ</span><span>cos φ</span></span></div>
+    </div>
+    <div class="grid">
+      <div class="mini"><h3>固定维度对 i，改变位置 m</h3><p class="muted">角度随位置线性增加：φ<sub>m,i</sub> = m θ<sub>i</sub>。同一个 feature 在位置 0、1、2… 会转到不同方向。</p></div>
+      <div class="mini"><h3>固定位置 m，改变维度对 i</h3><p class="muted">每对维度有不同 θ<sub>i</sub>，所以同一个 token 内，不同维度对旋转快慢不同。</p></div>
+    </div>
+    <h3 style="margin-top:22px">1.2 不同 index 为什么有不同频率？</h3>
+    <div class="formula bigformula">θ<sub>i</sub> = base<sup>−2i/d</sup>　（常见 base = 10000）<br>φ<sub>m,i</sub> = m · θ<sub>i</sub></div>
+    <p>i 是“二维通道对”的索引（0 到 d/2−1），不是单个通道编号。i 越大，频率越低。多频率让模型能同时拥有较细的局部位置分辨率和较慢变化的长距离位置尺度。</p>
+    <table><thead><tr><th>维度对</th><th>频率 θ（示例 d=8）</th><th>在位置 m=100 的累计角度</th><th>直觉</th></tr></thead><tbody>
+      <tr><td>(0,1), i=0</td><td>1</td><td>100 rad ≈ 5729.6°</td><td>高频、短周期，角度变化快</td></tr>
+      <tr><td>(2,3), i=1</td><td>0.1</td><td>10 rad ≈ 573.0°</td><td>中高频</td></tr>
+      <tr><td>(4,5), i=2</td><td>0.01</td><td>1 rad ≈ 57.3°</td><td>中低频</td></tr>
+      <tr><td>(6,7), i=3</td><td>0.001</td><td>0.1 rad ≈ 5.7°</td><td>低频、长周期，角度变化慢</td></tr>
+    </tbody></table>
+    <div class="callout"><b>关键澄清：</b>不是“越靠后的位置角度越小”。固定 i 时，位置 m 越大，累计角度 mθ<sub>i</sub> 越大；固定 m 时，维度对索引 i 越大，频率越低、累计角度通常越小。</div>
+    <h3 style="margin-top:22px">1.3 交互观察：位置与维度对如何决定角度</h3>
+    <div id="rope-demo">
+      <div class="controls"><label>位置 m <input id="pos" type="range" min="0" max="2048" step="1" value="100"><input id="posNumber" type="number" min="0" max="2048" step="1" value="100" aria-label="精确输入位置m"><b id="posv">100</b></label><label>head_dim <select id="hd"><option>8</option><option selected>64</option><option>128</option></select></label><button type="button" id="ropeNext">m + 1</button><button type="button" id="ropePlay">播放（m + 1/秒）</button><button type="button" id="ropeReset">重置</button></div>
+      <p class="rotation-note">四个单位圆共用同一个位置 m。虚线是 m = 0 的初始方向，实线是当前方向；每次 m 增加 1，转角增加 θ<sub>i</sub>。圆上的方向只显示累计角度对 360° 取模后的结果，下方圈数保留完整旋转信息。</p>
+      <div class="rotations" id="ropeRotations" aria-label="四种维度对的同位置旋转频率对照"></div>
+      <p class="chart-feedback" id="ropeStatus" aria-live="polite"></p>
+    </div>
+    <div class="legend"><span><i class="dot" style="background:#2864dc"></i>i=0（最高频）</span><span><i class="dot" style="background:#087f8c"></i>i≈d/6</span><span><i class="dot" style="background:#b96708"></i>i≈d/3</span><span><i class="dot" style="background:#7047bd"></i>i=d/2−1（最低频）</span></div>
+    <p class="muted">这里用初始向量 (1, 0) 演示旋转：当前方向为 (cos(mθᵢ), sin(mθᵢ))。相位会周期性重复，但累计角度和圈数不会丢失；播放时四个 index 都按同一速度推进 m，不单独加速低频维度。低频方向在相邻位置几乎不动，正是频率更低的表现。</p>
+    <h3 style="margin-top:22px">1.4 为什么 Attention 能感知相对位置？</h3>
+    <div class="formula bigformula">q′<sub>m</sub><sup>T</sup> k′<sub>n</sub> = q<sup>T</sup> R((n−m)θ) k</div>
+    <p>Q、K 分别按各自位置旋转后，它们的点积包含相对位置差 n−m。这让 Attention 的匹配同时受内容特征与相对位置影响。注意：真实 q 与 k 通常不同，上式不是简单的“距离越近相似度必然越高”。</p>
+  </div>
+</section>
+
+<section>
+  <div class="section-head"><div class="num">2</div><div><h2>长上下文需求：为什么原始 RoPE 需要调整？</h2><p>训练长度之外的位置属于外推；直接拉长序列，并不能保证模型仍能稳定利用位置。</p></div></div>
+  <div class="card">
+    <div class="grid">
+      <div class="mini"><span class="tag orange">问题 A</span><h3>位置范围超出训练分布</h3><p class="muted">如果模型训练时只见过长度 L，推理时突然使用更大的位置，模型可能遇到未充分训练过的相位组合。</p></div>
+      <div class="mini"><span class="tag orange">问题 B</span><h3>简单统一缩放有副作用</h3><p class="muted">位置插值 PI 把所有位置变成 m/s，相当于所有 RoPE 频率都除以 s。长上下文变得可表示，但高频维度的局部位置变化也被压慢。</p></div>
+    </div>
+    <div class="formula bigformula">PI：　m′ = m / s　　⇒　　θ′<sub>i</sub> = θ<sub>i</sub> / s</div>
+    <p>其中 L 是原始训练上下文长度，目标长度约为 sL。统一缩放对所有维度一视同仁，没有充分利用不同频率负责不同位置尺度这一结构。</p>
+  </div>
+</section>
+
+<section>
+  <div class="section-head"><div class="num">3</div><div><h2>YaRN：分频段插值，兼顾局部与长距离</h2><p>第一步改频率：低频更多插值，高频尽量保留，中间平滑过渡。</p></div></div>
+  <div class="card">
+    <h3>3.1 为什么要分段？</h3>
+    <p>不同频率维度的波长不同，因此它们对“扩展位置范围”的需求不同。低频本来旋转慢，适合承担更长尺度；高频有助于保留局部区分能力，不宜全部按相同比例压慢。</p>
+    <div class="grid3">
+      <div class="mini"><span class="tag teal">低频区</span><h3>更多插值</h3><div class="formula">θ′ = θ / s</div><p class="muted">扩大有效位置范围。</p></div>
+      <div class="mini"><span class="tag orange">过渡区</span><h3>平滑混合</h3><div class="formula">θ′ = ((1−γ)/s + γ) θ</div><p class="muted">避免频段边界突变。</p></div>
+      <div class="mini"><span class="tag blue">高频区</span><h3>保留原频率</h3><div class="formula">θ′ = θ</div><p class="muted">尽可能保留局部位置分辨率。</p></div>
+    </div>
+    <h3 style="margin-top:22px">3.2 分段方法的核心公式</h3>
+    <div class="formula bigformula">θ′<sub>i</sub> = [ (1−γ<sub>i</sub>)/s + γ<sub>i</sub> ] θ<sub>i</sub></div>
+    <p>γ<sub>i</sub> 是由该维度波长/旋转次数与阈值决定的 0 到 1 的平滑 ramp：</p>
+    <div class="formula">γ(r) = 0　（低频区）<br>γ(r) = (r−α)/(β−α)　（过渡区）<br>γ(r) = 1　（高频区）</div>
+    <p>直觉上：γ=0 时完全按 PI 缩放；γ=1 时保持原频率；中间值则在两者之间插值。具体阈值和维度索引映射应采用目标模型/框架的 YaRN 配置，不同实现的参数约定可能略有差异。</p>
+    <svg id="yarnChart" class="chart" viewBox="0 0 760 250" role="img" aria-label="原始RoPE、PI和YaRN频率对比"></svg>
+    <div class="legend"><span><i class="dot" style="background:#2864dc"></i>原始 RoPE</span><span><i class="dot" style="background:#b96708"></i>PI（统一缩放）</span><span><i class="dot" style="background:#16794b"></i>YaRN（分段）</span></div>
+  </div>
+</section>
+
+<section>
+  <div class="section-head"><div class="num">4</div><div><h2>为什么还要配合 Attention Scaling？</h2><p>频率调整与 logits 尺度校准解决的是两个相关但不同的问题。</p></div></div>
+  <div class="card">
+    <h3>4.1 Softmax 对 logits 的尺度敏感</h3>
+    <div class="formula bigformula">Attention = softmax(QK<sup>T</sup> / √d<sub>k</sub>)</div>
+    <p>如果 logits 的差异变大，Softmax 通常更尖锐；差异变小，分布通常更平。排序可能不变，但权重分配会明显变化。</p>
+    <div class="controls"><label>logits 放大倍数 <input id="logitScale" type="range" min="0.5" max="2.5" step="0.1" value="1"><b id="logitScaleV">1.0×</b></label></div>
+    <svg id="softmaxChart" class="chart" viewBox="0 0 760 230" role="img" aria-label="logits缩放对softmax分布的影响"></svg>
+    <p class="muted">交互示例使用 logits = [1, 2, 3]，只用于说明 Softmax 的尺度敏感性，不是某个模型的实测 Attention。</p>
+    <h3 style="margin-top:22px">4.2 YaRN 的 Attention Scaling 做法</h3>
+    <div class="formula bigformula">c(s) = 1 + 0.1 ln(s)</div>
+    <div class="formula bigformula">Q′ = cQ，K′ = cK　⇒　Q′K′<sup>T</sup> = c² QK<sup>T</sup></div>
+    <p>YaRN 的常见实现将旋转后的 Q、K 同时乘以 c，相当于把 Attention logits 乘以 c²。该缩放系数是论文针对相应模型设置给出的经验校准规律，不是对所有架构都必然最优的定理。</p>
+    <table><thead><tr><th>扩展倍数 s</th><th>c = 1 + 0.1 ln(s)</th><th>logits 倍数 c²</th><th>直觉</th></tr></thead><tbody>
+      <tr><td>2×</td><td>1.069</td><td>1.143×</td><td>轻微校准</td></tr><tr><td>4×</td><td>1.139</td><td>1.297×</td><td>适度校准</td></tr><tr><td>8×</td><td>1.208</td><td>1.460×</td><td>更明显校准</td></tr><tr><td>16×</td><td>1.277</td><td>1.630×</td><td>更明显校准</td></tr>
+    </tbody></table>
+    <div class="callout orange"><b>重要细节：</b>Attention Scaling 不会恢复已经丢失的位置信息，也不等于直接增加上下文长度。它用于校准注意力数值尺度；分频段频率调整则改变位置相位的变化方式。</div>
+  </div>
+</section>
+
+<section>
+  <div class="section-head"><div class="num">5</div><div><h2>把整条逻辑串起来</h2><p>YaRN 不是单独一个缩放公式，而是位置频率设计与 Attention 数值校准的组合。</p></div></div>
+  <div class="card">
+    <div class="steps">
+      <div class="step"><span class="tag blue">Step 1 · RoPE</span><b>不同频率旋转</b><p class="muted">位置 m 通过角度 mθ<sub>i</sub> 进入 Q、K；多频率提供多尺度的位置线索。</p></div>
+      <div class="step"><span class="tag orange">Step 2 · 长上下文</span><b>扩展位置范围</b><p class="muted">直接外推不稳；统一插值会把所有频率都压慢，可能损害局部位置分辨率。</p></div>
+      <div class="step"><span class="tag green">Step 3 · YaRN</span><b>分频段 + 校准</b><p class="muted">低频更多插值、高频尽量保留；再通过 Attention Scaling 校准 logits 的尺度。</p></div>
+    </div>
+    <div class="callout green"><b>一句话总结：</b>RoPE 用不同频率的旋转表达位置；YaRN 在扩展上下文时，按频段决定“哪些旋转要变慢、哪些尽量保持”，并用 Attention Scaling 校准注意力分布的尺度。实际效果仍取决于模型架构、训练配置和微调数据。</div>
+  </div>
+</section>
+<footer>自包含单页 · 原生 HTML / CSS / JavaScript · 无外部依赖 · 公式与交互图为教学示意</footer>
+</main>
+<script>
+const NS='http://www.w3.org/2000/svg';
+function el(tag,attrs={},txt=''){const n=document.createElementNS(NS,tag);Object.entries(attrs).forEach(([k,v])=>n.setAttribute(k,v));if(txt!== '')n.textContent=txt;return n}
+function label(svg,x,y,t,attrs={}){svg.appendChild(el('text',{x,y,fill:'#5d687c','font-size':12,...attrs},t))}
+function line(svg,x1,y1,x2,y2,color='#dfe5ef',width=1,dash=''){svg.appendChild(el('line',{x1,y1,x2,y2,stroke:color,'stroke-width':width,...(dash?{'stroke-dasharray':dash}:{})}))}
+function path(svg,pts,color,width=2){svg.appendChild(el('path',{d:pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(2)+','+p[1].toFixed(2)).join(' '),fill:'none',stroke:color,'stroke-width':width,'stroke-linejoin':'round','stroke-linecap':'round'}))}
+const ropeState={position:100,dimension:64,playing:false,timer:null};
+function drawRope(){
+ const root=document.getElementById('ropeRotations'),status=document.getElementById('ropeStatus');
+ if(!root||!status)return;
+ const p=ropeState.position,d=ropeState.dimension,last=d/2-1;
+ const indices=[0,Math.floor(last/3),Math.floor(last*2/3),last],colors=['#2864dc','#087f8c','#b96708','#7047bd'];
+ document.getElementById('pos').value=String(p);document.getElementById('posNumber').value=String(p);document.getElementById('posv').textContent=String(p);
+ document.getElementById('ropeNext').disabled=p>=2048;
+ root.replaceChildren();
+ const fmt=(v,n=5)=>v.toLocaleString('zh-CN',{maximumFractionDigits:n});
+ indices.forEach((i,j)=>{
+  const theta=10000**(-2*i/d),rad=p*theta,angle=rad*180/Math.PI,phase=rad%(2*Math.PI),turns=rad/(2*Math.PI),period=2*Math.PI/theta;
+  const panel=document.createElement('div');panel.className='rotation-panel';panel.style.setProperty('--pair-color',colors[j]);panel.dataset.index=String(i);panel.dataset.theta=String(theta);panel.dataset.angle=String(angle);panel.dataset.turns=String(turns);
+  const heading=document.createElement('h4');heading.textContent='i = '+i+(j===0?' · 高频':j===3?' · 低频':'');panel.appendChild(heading);
+  const svg=el('svg',{viewBox:'0 0 200 190',role:'img','aria-label':'维度对i='+i+'的旋转方向'});
+  const cx=100,cy=92,r=65,x=cx+r*Math.cos(phase),y=cy-r*Math.sin(phase);
+  svg.appendChild(el('circle',{cx,cy,r,fill:'#f8fafc',stroke:'#dfe5ef','stroke-width':1.5}));
+  line(svg,cx-r-9,cy,cx+r+9,cy,'#dfe5ef');line(svg,cx,cy-r-9,cx,cy+r+9,'#dfe5ef');
+  line(svg,cx,cy,cx+r,cy,'#9ba8bd',2,'5 4');
+  if(phase>1e-7){const ar=48,ax=cx+ar*Math.cos(phase),ay=cy-ar*Math.sin(phase);svg.appendChild(el('path',{d:'M '+(cx+ar)+' '+cy+' A '+ar+' '+ar+' 0 '+(phase>Math.PI?1:0)+' 0 '+ax+' '+ay,fill:'none',stroke:colors[j],'stroke-width':3,opacity:.55}));}
+  line(svg,cx,cy,x,y,colors[j],3);svg.appendChild(el('circle',{cx:x,cy:y,r:5,fill:colors[j],'data-vector-tip':'true'}));svg.appendChild(el('circle',{cx,cy,r:3,fill:'#172033'}));
+  label(svg,100,181,'当前相位 '+fmt(phase*180/Math.PI,3)+'°',{'text-anchor':'middle','font-size':13,fill:'#172033'});panel.appendChild(svg);
+  const dl=document.createElement('dl');
+  [['角频率 θ',fmt(theta,8)+' rad/位置'],['m 每增加 1',fmt(theta*180/Math.PI,5)+'°'],['转一圈需要',fmt(period,2)+' 个位置'],['累计角度',fmt(angle,3)+'°'],['累计圈数',fmt(turns,5)+' 圈']].forEach(([key,value])=>{const row=document.createElement('div'),dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=key;dd.textContent=value;row.append(dt,dd);dl.appendChild(row);});
+  panel.appendChild(dl);root.appendChild(panel);
+ });
+ root.dataset.position=String(p);root.dataset.dimension=String(d);
+ status.textContent='相同 Δm = 1：四个维度对分别增加 '+indices.map(i=>fmt(10000**(-2*i/d)*180/Math.PI,5)+'°').join('、')+'。index 越大，θ 越小，转一圈需要的位置越多。';
+}
+(function(){
+ try{
+  const pos=document.getElementById('pos'),number=document.getElementById('posNumber'),hd=document.getElementById('hd'),reset=document.getElementById('ropeReset'),play=document.getElementById('ropePlay'),next=document.getElementById('ropeNext');
+  if(!pos||!number||!hd||!reset||!play||!next)return;
+  const stop=()=>{if(ropeState.timer!==null)clearInterval(ropeState.timer);ropeState.timer=null;ropeState.playing=false;play.textContent='播放（m + 1/秒）';play.setAttribute('aria-pressed','false');};
+  const setPosition=value=>{const n=Number(value);if(!Number.isFinite(n))return;ropeState.position=Math.round(Math.max(0,Math.min(2048,n)));drawRope();};
+  pos.addEventListener('input',()=>{stop();setPosition(pos.value);});number.addEventListener('change',()=>{stop();setPosition(number.value);});
+  hd.addEventListener('change',()=>{stop();const d=Number(hd.value);if([8,64,128].includes(d)){ropeState.dimension=d;drawRope();}});
+  next.addEventListener('click',()=>{stop();setPosition(ropeState.position+1);});
+  play.addEventListener('click',()=>{if(ropeState.playing){stop();return;}if(ropeState.position>=2048)setPosition(0);ropeState.playing=true;play.textContent='暂停';play.setAttribute('aria-pressed','true');ropeState.timer=setInterval(()=>{setPosition(ropeState.position+1);if(ropeState.position>=2048)stop();},1000);});
+  reset.addEventListener('click',()=>{stop();ropeState.dimension=64;hd.value='64';setPosition(100);});
+  document.addEventListener('visibilitychange',()=>{if(document.hidden)stop();});window.addEventListener('pagehide',stop);
+  if(typeof IntersectionObserver!=='undefined')new IntersectionObserver(entries=>{if(!entries[0].isIntersecting)stop();}).observe(document.getElementById('rope-demo'));
+  play.setAttribute('aria-pressed','false');
+ }catch(e){console.error('RoPE图示初始化失败',e);}
+})();
+function drawYarn(){
+ const svg=document.getElementById('yarnChart');svg.innerHTML='';const W=760,H=250,L=58,R=18,T=18,B=42;
+ const N=64,s=8,vals=[[],[],[]];
+ for(let i=0;i<N;i++){const th=Math.pow(10000,-2*i/128);const r=i/(N-1);const g=Math.max(0,Math.min(1,(r-.2)/.42));vals[0].push(th);vals[1].push(th/s);vals[2].push(th*((1-g)/s+g));}
+ const all=vals.flat(),lo=Math.log10(Math.min(...all)),hi=Math.log10(Math.max(...all));
+ for(let j=0;j<=4;j++){const y=T+(H-T-B)*j/4;line(svg,L,y,W-R,y);label(svg,7,y+4,Math.pow(10,hi-(hi-lo)*j/4).toExponential(1));}
+ line(svg,L,T,L,H-B,'#9ba8bd');line(svg,L,H-B,W-R,H-B,'#9ba8bd');
+ const colors=['#2864dc','#b96708','#16794b'];
+ vals.forEach((a,k)=>{const pts=a.map((v,i)=>[L+(W-L-R)*i/(N-1),T+(H-T-B)*(hi-Math.log10(v))/(hi-lo)]);path(svg,pts,colors[k],2.5)});
+ label(svg,L,H-8,'低 index / 高频');label(svg,W-R,H-8,'高 index / 低频',{'text-anchor':'end'});label(svg,W-R,14,'频率 θ（对数轴）',{'text-anchor':'end'});
+}
+function drawSoftmax(){
+ const svg=document.getElementById('softmaxChart');svg.innerHTML='';const W=760,H=230,L=58,R=25,T=18,B=42,scale=+document.getElementById('logitScale').value;
+ const logits=[1,2,3].map(x=>x*scale),ex=logits.map(x=>Math.exp(x-Math.max(...logits))),sum=ex.reduce((a,b)=>a+b,0),probs=ex.map(x=>x/sum);
+ for(let j=0;j<=4;j++){const y=T+(H-T-B)*j/4;line(svg,L,y,W-R,y);label(svg,8,y+4,(1-j/4).toFixed(2));}
+ line(svg,L,T,L,H-B,'#9ba8bd');line(svg,L,H-B,W-R,H-B,'#9ba8bd');
+ const colors=['#9db8f7','#5e8ce8','#2864dc'];const bw=105,gap=95;
+ probs.forEach((v,i)=>{const x=L+60+i*(bw+gap),h=(H-T-B)*v,y=H-B-h;svg.appendChild(el('rect',{x,y,width:bw,height:h,rx:8,fill:colors[i]}));label(svg,x+bw/2,H-B+22,'Key '+(i+1),{'text-anchor':'middle'});label(svg,x+bw/2,y-8,v.toFixed(3),{'text-anchor':'middle','font-weight':'700',fill:'#172033'});});
+ label(svg,W-R,14,'Softmax 权重',{'text-anchor':'end'});
+}
+document.getElementById('logitScale').addEventListener('input',e=>{document.getElementById('logitScaleV').textContent=(+e.target.value).toFixed(1)+'×';drawSoftmax()});
+drawRope();drawYarn();drawSoftmax();
+</script>
+</body>
+</html>
